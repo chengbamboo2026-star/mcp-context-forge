@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "power-llmwiki": {
+      "type": "streamable-http",
+      "url": "https://kb.bamboo9527.top/mcp",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "client": {"mode": "dcr"},
+            "baseScopes": ["mcp:tools"],
+            "defaultScopes": ["mcp:tools"],
+            "oidcEnabled": true,
+            "oidcScopesSupported": ["openid", "profile", "email", "offline_access"]
+          }
+        }
+      }
+    }
+  }
+}

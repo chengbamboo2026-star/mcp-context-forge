@@ -1,0 +1,52 @@
+services:
+  wiki:
+    build:
+      context: ./wiki-adapter
+      dockerfile: Dockerfile.direct
+      args:
+        BASE_IMAGE: ${POWER_WIKI_BASE_IMAGE:-hxds-llmwiki:b44df6ae-http-r1}
+    image: ${POWER_WIKI_IMAGE:-hxds-llmwiki:oauth-direct-v1}
+    container_name: power-llmwiki-direct-dev
+    user: "1000:10001"
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:${POWER_WIKI_HOST_PORT:-8054}:8060"
+    networks:
+      - default
+      - keycloak_net
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    environment:
+      WIKI_DATA_DIR: /data
+      POWER_WIKI_PUBLIC_URL: ${POWER_WIKI_PUBLIC_URL:-https://kb.bamboo9527.top}
+      POWER_WIKI_RESOURCE_URL: ${POWER_WIKI_RESOURCE_URL:-https://kb.bamboo9527.top/mcp}
+      OAUTH_ISSUER: ${POWER_WIKI_OIDC_ISSUER:-https://auth.bamboo9527.top/realms/power-wiki-direct-dev}
+      OAUTH_JWKS_URL: ${POWER_WIKI_JWKS_URL:-http://contextforge-power-wiki-auth-keycloak-1:8080/realms/power-wiki-direct-dev/protocol/openid-connect/certs}
+      OAUTH_REQUIRED_SCOPE: ${POWER_WIKI_OAUTH_SCOPE:-mcp:tools}
+      OAUTH_REQUIRED_ROLE: ${POWER_WIKI_OAUTH_ROLE:-power-wiki-operator}
+      PORT: "8060"
+    volumes:
+      - type: bind
+        source: /opt/hxds-mcp/gateway-production/llmwiki-power/data
+        target: /data
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8060/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  keycloak_net:
+    external: true
+    name: ${POWER_WIKI_KEYCLOAK_NETWORK:-contextforge-power-wiki-auth_keycloak}

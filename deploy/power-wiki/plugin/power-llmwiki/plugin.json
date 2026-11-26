@@ -1,0 +1,26 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "power-llmwiki",
+  "version": "0.1.0",
+  "description": "Read and maintain the private Power Market System LLM Wiki through its authenticated MCP endpoint.",
+  "author": {
+    "name": "Power Market System"
+  },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Power LLM Wiki",
+        "shortDescription": "Authenticated project Wiki",
+        "longDescription": "Search, read, ingest, write, move, and delete reviewed Power Market System Wiki content through the directly connected OAuth-protected MCP service.",
+        "developerName": "Power Market System",
+        "category": "Productivity",
+        "capabilities": ["Interactive"],
+        "defaultPrompt": [
+          "Search the Power LLM Wiki for relevant project knowledge.",
+          "Read a Power LLM Wiki page and summarize the current facts.",
+          "Review a proposed Wiki update before writing it."
+        ]
+      }
+    }
+  }
+}

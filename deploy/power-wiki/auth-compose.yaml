@@ -1,0 +1,96 @@
+name: contextforge-power-wiki-auth
+
+services:
+  keycloak_postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD_FILE: /run/secrets/keycloak_db_password
+    secrets:
+      - source: keycloak_db_password_postgres
+        target: keycloak_db_password
+    volumes:
+      - keycloak_postgres_data:/var/lib/postgresql
+    networks:
+      - keycloak
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+  keycloak:
+    image: ${KEYCLOAK_IMAGE:-power-wiki-keycloak:26.8.2-t621}
+    build:
+      context: ./keycloak
+      args:
+        KEYCLOAK_BASE_IMAGE: ${KEYCLOAK_BASE_IMAGE:-quay.io/keycloak/keycloak:26.8.2@sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3}
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/opt/power-wiki/keycloak-with-secrets.sh"]
+    command: ["start", "--optimized"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak_postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-power-wiki-admin}
+      KC_HOSTNAME: ${POWER_WIKI_AUTH_URL:-https://auth.bamboo9527.top}
+      KC_HOSTNAME_STRICT: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: "8080"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      KC_FEATURES: resource-indicators
+      KC_METRICS_ENABLED: "false"
+      JAVA_OPTS_APPEND: ${KEYCLOAK_JAVA_OPTS:--Xms128m -Xmx512m}
+    secrets:
+      - keycloak_db_password
+      - keycloak_admin_password
+    volumes:
+      - ./keycloak-with-secrets.sh:/opt/power-wiki/keycloak-with-secrets.sh:ro
+    ports:
+      - "127.0.0.1:${KEYCLOAK_HOST_PORT:-8053}:8080"
+    networks:
+      - keycloak
+    depends_on:
+      keycloak_postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '200 OK' <&3
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
+    pids_limit: 256
+
+networks:
+  keycloak:
+    driver: bridge
+
+volumes:
+  keycloak_postgres_data:
+
+secrets:
+  keycloak_db_password_postgres:
+    file: ${POWER_WIKI_AUTH_SECRETS_DIR:-./runtime/auth-secrets}/keycloak-db-password-postgres
+  keycloak_db_password:
+    file: ${POWER_WIKI_AUTH_SECRETS_DIR:-./runtime/auth-secrets}/keycloak-db-password-keycloak
+  keycloak_admin_password:
+    file: ${POWER_WIKI_AUTH_SECRETS_DIR:-./runtime/auth-secrets}/keycloak-admin-password

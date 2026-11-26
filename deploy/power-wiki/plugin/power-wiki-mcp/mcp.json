@@ -1,0 +1,32 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "power-wiki": {
+      "type": "streamable-http",
+      "url": "https://kb.bamboo9527.top/servers/73c72592dd9c447d86b230930e20722d/mcp",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "client": {
+              "mode": "dcr"
+            },
+            "baseScopes": [
+              "mcp:tools"
+            ],
+            "defaultScopes": [
+              "mcp:tools"
+            ],
+            "oidcEnabled": true,
+            "oidcScopesSupported": [
+              "openid",
+              "profile",
+              "email",
+              "offline_access"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "power-wiki-mcp",
+  "version": "1.0.0",
+  "description": "Connects ChatGPT to the Power Wiki MCP server for authenticated knowledge retrieval and controlled updates.",
+  "author": {
+    "name": "Bamboo"
+  },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Power Wiki MCP",
+        "shortDescription": "Secure Power Wiki access",
+        "longDescription": "Read, search, validate, and update the project Power Wiki through the authenticated production MCP server.",
+        "developerName": "Bamboo",
+        "category": "Productivity",
+        "capabilities": [
+          "Interactive"
+        ],
+        "defaultPrompt": [
+          "Check Power Wiki status and list the available pages.",
+          "Read a specified Power Wiki page and summarize its current content.",
+          "Update a specified Power Wiki page after confirming the exact change."
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,321 @@
+name: contextforge-power-wiki
+
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: contextforge
+      POSTGRES_DB: contextforge
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks:
+      - contextforge
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contextforge -d contextforge"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - contextforge
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+
+  web_ui_redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    mem_limit: 192m
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - volatile-lru
+    volumes:
+      - web_ui_redis_data:/data
+    networks:
+      - contextforge
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+
+  migration:
+    image: ${CONTEXTFORGE_IMAGE:-ghcr.io/ibm/mcp-context-forge:v1.1.2@sha256:63eaf2348f4008ba5427dd2e52da7321dcfb4f89b97ddbfef111deb8f6e41ef2}
+    restart: "no"
+    entrypoint: ["/bin/bash", "/opt/power-wiki/with-secrets.sh"]
+    command: ["python", "-m", "mcpgateway.bootstrap_db"]
+    environment:
+      CONTEXTFORGE_SET_DATABASE_URL: "true"
+      PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-chengzuwei20240124@outlook.com}
+      AUTH_REQUIRED: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    secrets:
+      - postgres_password
+      - contextforge_jwt_secret
+      - contextforge_auth_encryption_secret
+      - contextforge_platform_admin_password
+      - contextforge_default_user_password
+      - power_wiki_identity_secret
+    volumes:
+      - ./with-secrets.sh:/opt/power-wiki/with-secrets.sh:ro
+    networks:
+      - contextforge
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  gateway:
+    image: ${CONTEXTFORGE_IMAGE:-ghcr.io/ibm/mcp-context-forge:v1.1.2@sha256:63eaf2348f4008ba5427dd2e52da7321dcfb4f89b97ddbfef111deb8f6e41ef2}
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/opt/power-wiki/with-secrets.sh"]
+    command: ["./docker-entrypoint.sh"]
+    environment:
+      CONTEXTFORGE_SET_DATABASE_URL: "true"
+      APP_DOMAIN: ${CONTEXTFORGE_PUBLIC_URL:-https://kb.bamboo9527.top}
+      HOST: 0.0.0.0
+      PORT: "4444"
+      # Four workers fit this 4-vCPU/7-GiB host while leaving headroom for
+      # Postgres, Redis and the Web UI. The automatic value is nine here.
+      GUNICORN_WORKERS: ${CONTEXTFORGE_GUNICORN_WORKERS:-4}
+      ENVIRONMENT: production
+      TRANSPORT_TYPE: streamablehttp
+      DATABASE_POOL_CLASS: queuepool
+      DB_POOL_SIZE: ${CONTEXTFORGE_DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${CONTEXTFORGE_DB_MAX_OVERFLOW:-5}
+      MCPGATEWAY_SKIP_MIGRATIONS: "true"
+      CACHE_TYPE: redis
+      REDIS_URL: redis://redis:6379/0
+      JWT_ALGORITHM: HS256
+      JWT_AUDIENCE: mcpgateway-api
+      JWT_ISSUER: mcpgateway
+      AUTH_REQUIRED: "true"
+      MCP_REQUIRE_AUTH: "true"
+      REQUIRE_TOKEN_EXPIRATION: "true"
+      REQUIRE_JTI: "true"
+      EMAIL_AUTH_ENABLED: "true"
+      SSO_ENABLED: "true"
+      SSO_API_TOKEN_AUTH_ENABLED: "true"
+      SSO_ALLOW_PROVIDER_LINKING: "false"
+      SSO_AUTO_CREATE_USERS: "false"
+      PROTECT_ALL_ADMINS: "true"
+      PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-chengzuwei20240124@outlook.com}
+      PASSWORD_CHANGE_ENFORCEMENT_ENABLED: "true"
+      MCPGATEWAY_UI_ENABLED: "true"
+      MCPGATEWAY_ADMIN_API_ENABLED: "true"
+      SECURITY_HEADERS_ENABLED: "true"
+      SECURE_COOKIES: "true"
+      FORWARDED_ALLOW_IPS: ${CONTEXTFORGE_FORWARDED_ALLOW_IPS:-127.0.0.1,::1,172.20.0.1,172.21.0.0/16}
+      CORS_ALLOW_CREDENTIALS: "true"
+      GATEWAY_TOOL_NAME_SEPARATOR: ${GATEWAY_TOOL_NAME_SEPARATOR:--}
+      SSRF_PROTECTION_ENABLED: "true"
+      SSRF_ALLOW_LOCALHOST: "false"
+      SSRF_ALLOW_PRIVATE_NETWORKS: "false"
+      SSRF_DNS_FAIL_CLOSED: "true"
+      SSRF_ALLOWED_NETWORKS: '["172.20.0.0/16"]'
+      UAID_ALLOWED_DOMAINS: '["kb.bamboo9527.top"]'
+      IDENTITY_PROPAGATION_ENABLED: "true"
+      IDENTITY_PROPAGATION_MODE: both
+      IDENTITY_PROPAGATION_HEADERS_PREFIX: X-Forwarded-User
+      IDENTITY_SIGN_CLAIMS: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: json
+    secrets:
+      - postgres_password
+      - contextforge_jwt_secret
+      - contextforge_auth_encryption_secret
+      - contextforge_platform_admin_password
+      - contextforge_default_user_password
+      - power_wiki_identity_secret
+    volumes:
+      - ./with-secrets.sh:/opt/power-wiki/with-secrets.sh:ro
+    ports:
+      - "127.0.0.1:${CONTEXTFORGE_HOST_PORT:-8051}:4444"
+    networks:
+      - contextforge
+      - power_wiki
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import json,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:4444/health', timeout=5)); raise SystemExit(0 if data.get('status') == 'healthy' else 1)"
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    read_only: true
+    tmpfs:
+      - /tmp:size=100m,mode=1777
+      - /var/tmp:size=50m,mode=1777
+      - /run:size=10m,mode=0755
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  web_ui:
+    # v0.3.2 is the official Web UI release paired with ContextForge v1.1.2.
+    image: ${CONTEXTFORGE_WEB_UI_IMAGE:-ghcr.io/contextforge-org/contextforge-web-ui:0.3.2@sha256:1710facdd8394c26dda1e726d3d4898e178c0ae8305ed3623233718139ad31b1}
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      PORT: "3000"
+      HOST: 0.0.0.0
+      CONTEXTFORGE_URL: http://gateway:4444
+      CONTEXTFORGE_AUTH_HEADER_NAME: Authorization
+      PASSWORD_RESET_REQUEST_TIMEOUT_MS: "30000"
+      OAUTH_PROXY_TIMEOUT_MS: "30000"
+      OAUTH_AUTHORIZE_NONCE_TTL_SECONDS: "120"
+      IMPORT_BODY_LIMIT_BYTES: "10485760"
+      REDIS_URL: redis://web_ui_redis:6379/0
+      SESSION_TTL_SECONDS: "86400"
+      REDIS_KEY_PREFIX: contextforge-web-ui
+      COOKIE_SECURE: "true"
+      TRUST_PROXY: "false"
+      PUBLIC_ORIGIN: ${CONTEXTFORGE_PUBLIC_URL:-https://kb.bamboo9527.top}
+      SSE_SESSION_RECHECK_SECONDS: "15"
+      LOG_LEVEL: info
+      SSO_ENABLED: "false"
+    ports:
+      - "127.0.0.1:${CONTEXTFORGE_WEB_UI_HOST_PORT:-8052}:3000"
+    networks:
+      - contextforge
+    depends_on:
+      gateway:
+        condition: service_healthy
+      web_ui_redis:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  register_power_wiki:
+    image: ${CONTEXTFORGE_IMAGE:-ghcr.io/ibm/mcp-context-forge:v1.1.2@sha256:63eaf2348f4008ba5427dd2e52da7321dcfb4f89b97ddbfef111deb8f6e41ef2}
+    user: "1000:10001"
+    restart: "no"
+    entrypoint: ["/bin/bash", "/opt/power-wiki/with-secrets.sh"]
+    command: ["python3", "/opt/power-wiki/bootstrap.py"]
+    environment:
+      # JWT keys and claims are environment-scoped in ContextForge v1.1.2.
+      # The bootstrap container must mint its admin token with the same scope
+      # as the production gateway or the gateway correctly rejects it.
+      ENVIRONMENT: production
+      JWT_ALGORITHM: HS256
+      JWT_AUDIENCE: mcpgateway-api
+      JWT_ISSUER: mcpgateway
+      CONTEXTFORGE_URL: http://gateway:4444
+      CONTEXTFORGE_PUBLIC_URL: ${CONTEXTFORGE_PUBLIC_URL:-https://kb.bamboo9527.top}
+      PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-chengzuwei20240124@outlook.com}
+      POWER_WIKI_GATEWAY_NAME: ${POWER_WIKI_GATEWAY_NAME:-llm_wike_power}
+      POWER_WIKI_UPSTREAM_URL: http://power-llmwiki:8060/mcp
+      POWER_WIKI_SERVER_ID: ${POWER_WIKI_SERVER_ID:-73c72592dd9c447d86b230930e20722d}
+      POWER_WIKI_SERVER_NAME: ${POWER_WIKI_SERVER_NAME:-power_ai}
+      POWER_WIKI_EXPECTED_TOOL_COUNT: ${POWER_WIKI_EXPECTED_TOOL_COUNT:-14}
+      POWER_WIKI_RESOURCE_URL: ${POWER_WIKI_RESOURCE_URL:-https://kb.bamboo9527.top/servers/73c72592dd9c447d86b230930e20722d/mcp}
+      POWER_WIKI_OIDC_PROVIDER_ID: ${POWER_WIKI_OIDC_PROVIDER_ID:-keycloak-power-wiki}
+      POWER_WIKI_OIDC_ISSUER: ${POWER_WIKI_OIDC_ISSUER:-https://auth.bamboo9527.top/realms/power-wiki}
+      POWER_WIKI_OIDC_CLIENT_ID: ${POWER_WIKI_OIDC_CLIENT_ID:-contextforge-power-wiki}
+      POWER_WIKI_OPERATOR_EMAIL: ${POWER_WIKI_OPERATOR_EMAIL:-power-wiki-operator@bamboo9527.top}
+      POWER_WIKI_OPERATOR_TEAM: ${POWER_WIKI_OPERATOR_TEAM:-Power Wiki Operators}
+      POWER_WIKI_OPERATOR_ROLE: ${POWER_WIKI_OPERATOR_ROLE:-power_wiki_operator}
+    secrets:
+      - contextforge_jwt_secret
+      - contextforge_auth_encryption_secret
+      - contextforge_platform_admin_password
+      - contextforge_default_user_password
+      - power_wiki_identity_secret
+      - power_wiki_service_token
+      - contextforge_oidc_client_secret
+    volumes:
+      - ./with-secrets.sh:/opt/power-wiki/with-secrets.sh:ro
+      - ./bootstrap.py:/opt/power-wiki/bootstrap.py:ro
+      - ./verify-deployment.py:/opt/power-wiki/verify-deployment.py:ro
+    networks:
+      - contextforge
+      - power_wiki
+    depends_on:
+      gateway:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  contextforge:
+    driver: bridge
+  power_wiki:
+    external: true
+    name: ${POWER_WIKI_NETWORK:-app_net}
+
+volumes:
+  postgres_data:
+  redis_data:
+  web_ui_redis_data:
+
+secrets:
+  postgres_password:
+    file: ${CONTEXTFORGE_SECRETS_DIR:-./runtime/secrets}/postgres-password
+  contextforge_jwt_secret:
+    file: ${CONTEXTFORGE_SECRETS_DIR:-./runtime/secrets}/jwt-secret
+  contextforge_auth_encryption_secret:
+    file: ${CONTEXTFORGE_SECRETS_DIR:-./runtime/secrets}/auth-encryption-secret
+  contextforge_platform_admin_password:
+    file: ${CONTEXTFORGE_SECRETS_DIR:-./runtime/secrets}/platform-admin-password
+  contextforge_default_user_password:
+    file: ${CONTEXTFORGE_SECRETS_DIR:-./runtime/secrets}/default-user-password
+  power_wiki_identity_secret:
+    file: ${POWER_WIKI_IDENTITY_SECRET_FILE:-/opt/hxds-mcp/gateway-production/secrets/contextforge-identity-secret}
+  power_wiki_service_token:
+    file: ${POWER_WIKI_SERVICE_TOKEN_FILE:-/opt/hxds-mcp/gateway-production/llmwiki-power/secrets/wiki-service-token}
+  contextforge_oidc_client_secret:
+    file: ${POWER_WIKI_AUTH_SECRETS_DIR:-./runtime/auth-secrets}/contextforge-client-secret

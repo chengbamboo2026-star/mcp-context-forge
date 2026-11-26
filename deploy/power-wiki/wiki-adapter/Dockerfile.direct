@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=hxds-llmwiki:b44df6ae-http-r1
+FROM ${BASE_IMAGE}
+
+COPY --chown=1000:10001 oauth-jwt.mjs /app/adapter/oauth-jwt.mjs
+COPY --chown=1000:10001 direct-server.mjs /app/adapter/direct-server.mjs
+
+CMD ["node", "/app/adapter/direct-server.mjs"]
