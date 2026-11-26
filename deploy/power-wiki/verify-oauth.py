@@ -104,22 +104,36 @@ class KeycloakAdmin:
         """Authenticate to the Keycloak administration API."""
         self.base_url = base_url.rstrip("/")
         self.realm = realm
+        self.username = username
+        self.password = password
+        self.token = self._authenticate()
+
+    def _authenticate(self) -> str:
+        """Return a fresh Keycloak administration access token."""
         response, _ = http_json(
             "POST",
             f"{self.base_url}/realms/master/protocol/openid-connect/token",
             {
                 "client_id": "admin-cli",
                 "grant_type": "password",
-                "username": username,
-                "password": password,
+                "username": self.username,
+                "password": self.password,
             },
             form=True,
         )
-        self.token = str(response["access_token"])
+        return str(response["access_token"])
 
     def request(self, method: str, path: str, data: Any = None) -> Any:
-        """Send one realm administration request."""
-        value, _ = http_json(method, f"{self.base_url}/admin/realms/{urllib.parse.quote(self.realm)}{path}", data, token=self.token)
+        """Send one realm administration request, refreshing one expired token."""
+        url = f"{self.base_url}/admin/realms/{urllib.parse.quote(self.realm)}{path}"
+        try:
+            value, _ = http_json(method, url, data, token=self.token)
+            return value
+        except HttpError as exc:
+            if exc.status != 401:
+                raise
+        self.token = self._authenticate()
+        value, _ = http_json(method, url, data, token=self.token)
         return value
 
     def client(self, client_id: str) -> dict[str, Any] | None:

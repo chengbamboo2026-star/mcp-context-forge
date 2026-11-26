@@ -159,6 +159,27 @@ class PowerWikiKeycloakTests(unittest.TestCase):
         self.assertEqual(result, {"teams": []})
         sleep.assert_called_once_with(2)
 
+    def test_keycloak_admin_refreshes_expired_token_once(self):
+        admin = oauth_verifier.KeycloakAdmin.__new__(oauth_verifier.KeycloakAdmin)
+        admin.base_url = "https://keycloak.example.test"
+        admin.realm = "power-wiki"
+        admin.username = "power-wiki-admin"
+        admin.password = "test-password"
+        admin.token = "expired-token"
+
+        responses = [
+            oauth_verifier.HttpError(401, "GET /admin/realms/power-wiki/users"),
+            ({"access_token": "fresh-token"}, {}),
+            ([{"id": "user-id"}], {}),
+        ]
+        with unittest.mock.patch.object(oauth_verifier, "http_json", side_effect=responses) as http_json:
+            result = admin.request("GET", "/users")
+
+        self.assertEqual(result, [{"id": "user-id"}])
+        self.assertEqual(admin.token, "fresh-token")
+        self.assertEqual(http_json.call_count, 3)
+        self.assertEqual(http_json.call_args_list[-1].kwargs["token"], "fresh-token")
+
 
 class OpenAIAllowlistTests(unittest.TestCase):
     def test_parse_and_render_public_prefixes(self):
