@@ -38,10 +38,11 @@ def read_secret(path: Path) -> str:
 class HttpError(RuntimeError):
     """Represent one expected HTTP failure without its response body."""
 
-    def __init__(self, status: int, operation: str):
+    def __init__(self, status: int, operation: str, retry_after: float | None = None):
         """Initialize the error."""
         super().__init__(f"{operation} failed with HTTP {status}")
         self.status = status
+        self.retry_after = retry_after
 
 
 def http_json(
@@ -72,7 +73,16 @@ def http_json(
             return (json.loads(raw) if raw else None), dict(response.headers.items())
     except urllib.error.HTTPError as exc:
         exc.read(4096)
-        raise HttpError(exc.code, f"{method} {urllib.parse.urlparse(url).path}") from exc
+        retry_after = None
+        try:
+            retry_after = float(exc.headers.get("Retry-After", ""))
+        except (TypeError, ValueError):
+            pass
+        raise HttpError(
+            exc.code,
+            f"{method} {urllib.parse.urlparse(url).path}",
+            retry_after,
+        ) from exc
 
 
 def jwt_claims(token: str) -> dict[str, Any]:
@@ -213,14 +223,15 @@ class ContextForgeAdmin:
 
     def request(self, method: str, path: str, data: Any = None) -> Any:
         """Send one ContextForge administration request."""
-        for attempt in range(1, 6):
+        for attempt in range(1, 10):
             try:
                 value, _ = http_json(method, f"{self.base_url}{path}", data, token=self.token)
                 return value
             except HttpError as exc:
-                if exc.status != 429 or attempt == 5:
+                if exc.status != 429 or attempt == 9:
                     raise
-                time.sleep(attempt)
+                delay = exc.retry_after if exc.retry_after is not None else min(5 * attempt, 30)
+                time.sleep(max(1.0, min(delay, 120.0)))
         raise RuntimeError("ContextForge request retry loop ended unexpectedly")
 
     def provision_sso_user(self, email: str, provider_id: str) -> None:
@@ -613,7 +624,8 @@ def main() -> int:
                     "restored_sha256": original_hash,
                 },
                 sort_keys=True,
-            )
+            ),
+            flush=True,
         )
         return 0
     finally:

@@ -27,6 +27,7 @@ contextforge_keycloak = load_script(
     "keycloak-bootstrap-contextforge.py",
 )
 allowlist = load_script("power_wiki_openai_allowlist", "render-openai-allowlist.py")
+oauth_verifier = load_script("power_wiki_oauth_verifier", "verify-oauth.py")
 
 
 class PowerWikiKeycloakTests(unittest.TestCase):
@@ -139,6 +140,24 @@ class PowerWikiKeycloakTests(unittest.TestCase):
             ["https://kb.example.test/v1/auth/sso/callback/keycloak-power-wiki"],
         )
         self.assertEqual(browser_payload["attributes"]["pkce.code.challenge.method"], "S256")
+
+    def test_contextforge_admin_honors_rate_limit_retry(self):
+        admin = oauth_verifier.ContextForgeAdmin.__new__(oauth_verifier.ContextForgeAdmin)
+        admin.base_url = "https://contextforge.example.test"
+        admin.token = "test-token"
+        responses = [
+            oauth_verifier.HttpError(429, "GET /v1/teams", retry_after=2),
+            ({"teams": []}, {}),
+        ]
+
+        with (
+            unittest.mock.patch.object(oauth_verifier, "http_json", side_effect=responses),
+            unittest.mock.patch.object(oauth_verifier.time, "sleep") as sleep,
+        ):
+            result = admin.request("GET", "/v1/teams")
+
+        self.assertEqual(result, {"teams": []})
+        sleep.assert_called_once_with(2)
 
 
 class OpenAIAllowlistTests(unittest.TestCase):
