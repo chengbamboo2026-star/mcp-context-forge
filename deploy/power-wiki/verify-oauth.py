@@ -120,6 +120,16 @@ def verify_oauth_discovery(resource_url: str, issuer: str) -> dict[str, str]:
         value = oidc.get(field)
         if not isinstance(value, str) or not value.startswith(f"{issuer}/"):
             raise RuntimeError(f"OIDC discovery returned an invalid {field}")
+    if oidc.get("registration_endpoint") != f"{issuer}/clients-registrations/openid-connect":
+        raise RuntimeError("OIDC discovery returned an invalid registration_endpoint")
+    token_auth_methods = oidc.get("token_endpoint_auth_methods_supported")
+    if not isinstance(token_auth_methods, list) or "none" not in token_auth_methods:
+        raise RuntimeError("OIDC discovery omitted public PKCE token exchange")
+    challenge_methods = oidc.get("code_challenge_methods_supported")
+    if not isinstance(challenge_methods, list) or "S256" not in challenge_methods:
+        raise RuntimeError("OIDC discovery omitted the S256 PKCE method")
+    if oidc.get("authorization_response_iss_parameter_supported") is not True:
+        raise RuntimeError("OIDC discovery omitted authorization response issuer support")
     return {"resource_metadata": metadata_url, "issuer": issuer}
 
 

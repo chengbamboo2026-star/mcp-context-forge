@@ -199,6 +199,10 @@ class PowerWikiKeycloakTests(unittest.TestCase):
                     "authorization_endpoint": f"{issuer}/protocol/openid-connect/auth",
                     "token_endpoint": f"{issuer}/protocol/openid-connect/token",
                     "jwks_uri": f"{issuer}/protocol/openid-connect/certs",
+                    "registration_endpoint": f"{issuer}/clients-registrations/openid-connect",
+                    "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "authorization_response_iss_parameter_supported": True,
                 },
                 {},
             ),
@@ -212,6 +216,40 @@ class PowerWikiKeycloakTests(unittest.TestCase):
             "https://kb.example.test/.well-known/oauth-protected-resource/servers/550e8400-e29b-41d4-a716-446655440000/mcp",
         )
         self.assertEqual(http_json.call_count, 2)
+
+    def test_oauth_discovery_requires_public_pkce_token_exchange(self):
+        resource = "https://kb.example.test/servers/550e8400-e29b-41d4-a716-446655440000/mcp"
+        issuer = "https://auth.example.test/realms/power-wiki"
+        responses = [
+            (
+                {
+                    "resource": resource,
+                    "authorization_servers": [issuer],
+                    "bearer_methods_supported": ["header"],
+                    "scopes_supported": ["mcp:tools"],
+                },
+                {},
+            ),
+            (
+                {
+                    "issuer": issuer,
+                    "authorization_endpoint": f"{issuer}/protocol/openid-connect/auth",
+                    "token_endpoint": f"{issuer}/protocol/openid-connect/token",
+                    "jwks_uri": f"{issuer}/protocol/openid-connect/certs",
+                    "registration_endpoint": f"{issuer}/clients-registrations/openid-connect",
+                    "token_endpoint_auth_methods_supported": ["client_secret_basic"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "authorization_response_iss_parameter_supported": True,
+                },
+                {},
+            ),
+        ]
+
+        with (
+            unittest.mock.patch.object(oauth_verifier, "http_json", side_effect=responses),
+            self.assertRaisesRegex(RuntimeError, "public PKCE token exchange"),
+        ):
+            oauth_verifier.verify_oauth_discovery(resource, issuer)
 
     def test_oauth_discovery_rejects_non_public_metadata_failure(self):
         resource = "https://kb.example.test/servers/550e8400-e29b-41d4-a716-446655440000/mcp"
