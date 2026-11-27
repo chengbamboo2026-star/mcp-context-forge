@@ -87,6 +87,80 @@ class PowerWikiKeycloakTests(unittest.TestCase):
         self.assertTrue(any(method == "PUT" and path.endswith("/mapper-id") for method, path, _ in calls))
         self.assertEqual(mapper["config"]["included.client.audience"], resource)
 
+    def test_realm_optional_scope_is_added_and_verified(self):
+        calls = []
+        responses = [[], [{"id": "scope-id", "name": "mcp:tools"}]]
+
+        class Api:
+            def request(self, method, path, data=None, **_kwargs):
+                calls.append((method, path, data))
+                if method == "GET":
+                    return responses.pop(0)
+                return None
+
+        contextforge_keycloak.ensure_realm_optional_scope(Api(), "power-wiki", "scope-id")
+
+        self.assertIn(
+            (
+                "PUT",
+                "/admin/realms/power-wiki/default-optional-client-scopes/scope-id",
+                None,
+            ),
+            calls,
+        )
+
+    def test_existing_chatgpt_dcr_clients_receive_mcp_scope(self):
+        calls = []
+        clients = [
+            {
+                "id": "chatgpt-client",
+                "protocol": "openid-connect",
+                "publicClient": True,
+                "standardFlowEnabled": True,
+                "redirectUris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+            },
+            {
+                "id": "unrelated-client",
+                "protocol": "openid-connect",
+                "publicClient": True,
+                "standardFlowEnabled": True,
+                "redirectUris": ["https://example.test/callback"],
+            },
+        ]
+        scope_reads = [[], [{"id": "scope-id", "name": "mcp:tools"}]]
+
+        class Api:
+            def request(self, method, path, data=None, **_kwargs):
+                calls.append((method, path, data))
+                if path.endswith("/clients?max=1000"):
+                    return clients
+                if method == "GET" and path.endswith("/optional-client-scopes"):
+                    return scope_reads.pop(0)
+                return None
+
+        matched = contextforge_keycloak.ensure_chatgpt_dcr_scopes(Api(), "power-wiki", "scope-id")
+
+        self.assertEqual(matched, 1)
+        self.assertIn(
+            (
+                "PUT",
+                "/admin/realms/power-wiki/clients/chatgpt-client/optional-client-scopes/scope-id",
+                None,
+            ),
+            calls,
+        )
+        self.assertFalse(any("unrelated-client/optional-client-scopes" in path for _, path, _ in calls))
+
+    def test_chatgpt_dcr_client_rejects_untrusted_redirect(self):
+        client = {
+            "protocol": "openid-connect",
+            "publicClient": True,
+            "standardFlowEnabled": True,
+            "redirectUris": ["https://evil.example/connector_platform_oauth_redirect"],
+        }
+
+        self.assertFalse(contextforge_keycloak.is_chatgpt_dcr_client(client))
+
     def test_resource_client_is_bearer_only(self):
         calls = []
 

@@ -224,6 +224,15 @@ class KeycloakAdmin:
         clients = self.request("GET", f"/clients?{query}")
         return next((item for item in clients if item.get("clientId") == client_id), None)
 
+    def require_optional_client_scope(self, client_id: str, scope_name: str) -> None:
+        """Require one optional scope on a Keycloak client."""
+        client = self.client(client_id)
+        if not client:
+            raise RuntimeError("Keycloak did not retain the DCR client")
+        scopes = self.request("GET", f"/clients/{urllib.parse.quote(str(client['id']))}/optional-client-scopes")
+        if not any(item.get("name") == scope_name for item in scopes):
+            raise RuntimeError(f"Keycloak DCR client omitted the {scope_name} scope")
+
     def create_verifier_client(self, client_id: str, secret: str) -> str:
         """Create a direct-grant client for this verification run."""
         existing = self.client(client_id)
@@ -646,6 +655,7 @@ def main() -> int:
     try:
         discovery = verify_oauth_discovery(resource_url, issuer)
         dcr_client_id = register_dcr_client(keycloak_url)
+        keycloak.require_optional_client_scope(dcr_client_id, "mcp:tools")
         verifier_client_internal_id = keycloak.create_verifier_client(client_id, verifier_secret)
         for email in emails.values():
             keycloak_user_ids.append(keycloak.create_user(email, verifier_password))

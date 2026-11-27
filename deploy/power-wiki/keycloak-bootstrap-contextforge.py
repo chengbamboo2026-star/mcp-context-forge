@@ -19,6 +19,8 @@ CONTEXTFORGE_RESOURCE_URL = (
     "https://kb.bamboo9527.top/servers/73c72592dd9c447d86b230930e20722d/mcp"
 )
 DIRECT_RESOURCE_URL = "https://kb.bamboo9527.top/mcp"
+CHATGPT_STABLE_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect"
+CHATGPT_CALLBACK_PREFIX = "/connector/oauth/"
 
 
 def required_env(name: str, default: str | None = None) -> str:
@@ -228,6 +230,58 @@ def ensure_client_scope(api: JsonClient, realm: str, resource_url: str) -> str:
     return scope_id
 
 
+def ensure_realm_optional_scope(api: JsonClient, realm: str, scope_id: str) -> None:
+    """Add mcp:tools to the optional scopes for new clients."""
+    encoded_realm = urllib.parse.quote(realm)
+    encoded_scope = urllib.parse.quote(scope_id)
+    base = f"/admin/realms/{encoded_realm}"
+    path = f"{base}/default-optional-client-scopes"
+    assigned = api.request("GET", path)
+    if not any(str(item.get("id")) == scope_id for item in assigned):
+        api.request("PUT", f"{path}/{encoded_scope}")
+    verified = api.request("GET", path)
+    if not any(str(item.get("id")) == scope_id for item in verified):
+        raise RuntimeError("Keycloak did not add mcp:tools to the optional realm scopes")
+
+
+def is_chatgpt_dcr_client(client: dict[str, Any]) -> bool:
+    """Return true for a public ChatGPT authorization-code client."""
+    redirect_uris = client.get("redirectUris")
+    if not isinstance(redirect_uris, list) or not redirect_uris:
+        return False
+    if client.get("protocol") != "openid-connect":
+        return False
+    if client.get("publicClient") is not True or client.get("standardFlowEnabled") is not True:
+        return False
+    for value in redirect_uris:
+        parsed = urllib.parse.urlsplit(str(value))
+        if parsed.scheme != "https" or parsed.netloc != "chatgpt.com" or parsed.query or parsed.fragment:
+            return False
+        if parsed.path != urllib.parse.urlsplit(CHATGPT_STABLE_REDIRECT).path and not parsed.path.startswith(CHATGPT_CALLBACK_PREFIX):
+            return False
+    return True
+
+
+def ensure_chatgpt_dcr_scopes(api: JsonClient, realm: str, scope_id: str) -> int:
+    """Add mcp:tools to each existing ChatGPT DCR client."""
+    encoded_realm = urllib.parse.quote(realm)
+    clients = api.request("GET", f"/admin/realms/{encoded_realm}/clients?max=1000")
+    matched = 0
+    for client in clients:
+        if not is_chatgpt_dcr_client(client):
+            continue
+        matched += 1
+        client_id = urllib.parse.quote(str(client["id"]))
+        scope_path = f"/admin/realms/{encoded_realm}/clients/{client_id}/optional-client-scopes"
+        assigned = api.request("GET", scope_path)
+        if not any(str(item.get("id")) == scope_id for item in assigned):
+            api.request("PUT", f"{scope_path}/{urllib.parse.quote(scope_id)}")
+        verified = api.request("GET", scope_path)
+        if not any(str(item.get("id")) == scope_id for item in verified):
+            raise RuntimeError("Keycloak did not add mcp:tools to a ChatGPT DCR client")
+    return matched
+
+
 def client_by_id(api: JsonClient, realm: str, client_id: str) -> dict[str, Any] | None:
     """Return one Keycloak client by clientId."""
     query = urllib.parse.urlencode({"clientId": client_id})
@@ -426,7 +480,9 @@ def main() -> int:
     )
     api = JsonClient(base_url, token)
     realm_state = ensure_realm(api, realm)
-    ensure_client_scope(api, realm, resource_url)
+    scope_id = ensure_client_scope(api, realm, resource_url)
+    ensure_realm_optional_scope(api, realm, scope_id)
+    dcr_clients = ensure_chatgpt_dcr_scopes(api, realm, scope_id)
     ensure_clients(
         api,
         realm,
@@ -446,6 +502,7 @@ def main() -> int:
                 "resource": resource_url,
                 "operator": operator_email,
                 "dcr": "restricted",
+                "dcr_clients_scoped": dcr_clients,
             },
             sort_keys=True,
         )
