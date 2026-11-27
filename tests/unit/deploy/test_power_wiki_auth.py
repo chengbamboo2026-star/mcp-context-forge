@@ -180,6 +180,67 @@ class PowerWikiKeycloakTests(unittest.TestCase):
         self.assertEqual(http_json.call_count, 3)
         self.assertEqual(http_json.call_args_list[-1].kwargs["token"], "fresh-token")
 
+    def test_oauth_discovery_requires_exact_resource_and_issuer(self):
+        resource = "https://kb.example.test/servers/550e8400-e29b-41d4-a716-446655440000/mcp"
+        issuer = "https://auth.example.test/realms/power-wiki"
+        responses = [
+            (
+                {
+                    "resource": resource,
+                    "authorization_servers": [issuer],
+                    "bearer_methods_supported": ["header"],
+                    "scopes_supported": ["openid", "mcp:tools"],
+                },
+                {},
+            ),
+            (
+                {
+                    "issuer": issuer,
+                    "authorization_endpoint": f"{issuer}/protocol/openid-connect/auth",
+                    "token_endpoint": f"{issuer}/protocol/openid-connect/token",
+                    "jwks_uri": f"{issuer}/protocol/openid-connect/certs",
+                },
+                {},
+            ),
+        ]
+
+        with unittest.mock.patch.object(oauth_verifier, "http_json", side_effect=responses) as http_json:
+            result = oauth_verifier.verify_oauth_discovery(resource, issuer)
+
+        self.assertEqual(
+            result["resource_metadata"],
+            "https://kb.example.test/.well-known/oauth-protected-resource/servers/550e8400-e29b-41d4-a716-446655440000/mcp",
+        )
+        self.assertEqual(http_json.call_count, 2)
+
+    def test_oauth_discovery_rejects_non_public_metadata_failure(self):
+        resource = "https://kb.example.test/servers/550e8400-e29b-41d4-a716-446655440000/mcp"
+
+        with (
+            unittest.mock.patch.object(
+                oauth_verifier,
+                "http_json",
+                side_effect=oauth_verifier.HttpError(404, "GET protected-resource metadata"),
+            ),
+            self.assertRaisesRegex(oauth_verifier.HttpError, "HTTP 404"),
+        ):
+            oauth_verifier.verify_oauth_discovery(resource, "https://auth.example.test/realms/power-wiki")
+
+    def test_server_profile_requires_dedicated_team(self):
+        server = {
+            "id": "server-id",
+            "teamId": "operator-team-id",
+            "visibility": "public",
+            "oauthEnabled": True,
+            "oauthConfigApproved": True,
+        }
+
+        result = oauth_verifier.verify_server_profile(server, "server-id", "operator-team-id")
+
+        self.assertEqual(result["team_id"], "operator-team-id")
+        with self.assertRaisesRegex(RuntimeError, "dedicated operator team"):
+            oauth_verifier.verify_server_profile(server, "server-id", "personal-team-id")
+
 
 class OpenAIAllowlistTests(unittest.TestCase):
     def test_parse_and_render_public_prefixes(self):

@@ -85,6 +85,59 @@ def http_json(
         ) from exc
 
 
+def protected_resource_metadata_url(resource_url: str) -> str:
+    """Build the RFC 9728 metadata URL for one MCP resource URL."""
+    parsed = urllib.parse.urlsplit(resource_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not parsed.path.startswith("/"):
+        raise RuntimeError("Power Wiki resource URL is not an absolute HTTP(S) URL")
+    metadata_path = f"/.well-known/oauth-protected-resource{parsed.path.rstrip('/')}"
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, metadata_path, "", ""))
+
+
+def verify_oauth_discovery(resource_url: str, issuer: str) -> dict[str, str]:
+    """Require public RFC 9728 metadata and matching OIDC discovery."""
+    issuer = issuer.rstrip("/")
+    metadata_url = protected_resource_metadata_url(resource_url)
+    metadata, _ = http_json("GET", metadata_url)
+    if not isinstance(metadata, dict):
+        raise RuntimeError("OAuth protected-resource metadata was not an object")
+    if metadata.get("resource") != resource_url:
+        raise RuntimeError("OAuth protected-resource metadata returned the wrong resource")
+    authorization_servers = metadata.get("authorization_servers")
+    if authorization_servers != [issuer]:
+        raise RuntimeError("OAuth protected-resource metadata returned the wrong authorization server")
+    if metadata.get("bearer_methods_supported") != ["header"]:
+        raise RuntimeError("OAuth protected-resource metadata did not require header bearer tokens")
+    scopes = metadata.get("scopes_supported")
+    if not isinstance(scopes, list) or "mcp:tools" not in scopes:
+        raise RuntimeError("OAuth protected-resource metadata omitted the mcp:tools scope")
+
+    oidc_url = f"{issuer}/.well-known/openid-configuration"
+    oidc, _ = http_json("GET", oidc_url)
+    if not isinstance(oidc, dict) or oidc.get("issuer") != issuer:
+        raise RuntimeError("OIDC discovery returned the wrong issuer")
+    for field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+        value = oidc.get(field)
+        if not isinstance(value, str) or not value.startswith(f"{issuer}/"):
+            raise RuntimeError(f"OIDC discovery returned an invalid {field}")
+    return {"resource_metadata": metadata_url, "issuer": issuer}
+
+
+def verify_server_profile(server: dict[str, Any], server_id: str, team_id: str) -> dict[str, Any]:
+    """Require the virtual server to retain its discovery and RBAC ownership profile."""
+    actual_id = str(server.get("id", ""))
+    actual_team_id = str(server.get("teamId") or server.get("team_id") or "")
+    if actual_id != server_id:
+        raise RuntimeError("Power Wiki virtual server returned the wrong ID")
+    if server.get("visibility") != "public":
+        raise RuntimeError("Power Wiki virtual server must remain public for RFC 9728 discovery")
+    if actual_team_id != team_id:
+        raise RuntimeError("Power Wiki virtual server is not owned by the dedicated operator team")
+    if server.get("oauthEnabled") is not True or server.get("oauthConfigApproved") is not True:
+        raise RuntimeError("Power Wiki virtual server OAuth must remain enabled and approved")
+    return {"id": actual_id, "team_id": actual_team_id, "visibility": "public", "oauth_approved": True}
+
+
 def jwt_claims(token: str) -> dict[str, Any]:
     """Decode unverified claims for test assertions only."""
     parts = token.split(".")
@@ -529,6 +582,8 @@ def main() -> int:
     keycloak_url = required_env("KEYCLOAK_INTERNAL_URL", "http://127.0.0.1:8053")
     contextforge_url = required_env("CONTEXTFORGE_URL", "http://127.0.0.1:8051")
     resource_url = required_env("POWER_WIKI_RESOURCE_URL")
+    server_id = required_env("POWER_WIKI_SERVER_ID", "73c72592dd9c447d86b230930e20722d")
+    issuer = required_env("POWER_WIKI_OIDC_ISSUER")
     provider_id = required_env("POWER_WIKI_OIDC_PROVIDER_ID", "keycloak-power-wiki")
     team_name = required_env("POWER_WIKI_OPERATOR_TEAM", "Power Wiki Operators")
     operator_role_name = required_env("POWER_WIKI_OPERATOR_ROLE", "power_wiki_operator")
@@ -560,6 +615,7 @@ def main() -> int:
     write_restored = False
 
     try:
+        discovery = verify_oauth_discovery(resource_url, issuer)
         dcr_client_id = register_dcr_client(keycloak_url)
         verifier_client_internal_id = keycloak.create_verifier_client(client_id, verifier_secret)
         for email in emails.values():
@@ -568,6 +624,7 @@ def main() -> int:
             contextforge.clear_roles(email)
 
         team_id = contextforge.team_id(team_name)
+        server_profile = verify_server_profile(contextforge.request("GET", f"/servers/{server_id}"), server_id, team_id)
         operator_role = contextforge.role(operator_role_name)
         if operator_role.get("permissions") != ["servers.use", "tools.read", "tools.execute"]:
             raise RuntimeError("Power Wiki operator role has unexpected permissions")
@@ -629,8 +686,10 @@ def main() -> int:
                 {
                     "status": "ok",
                     "dcr": "allowed_and_untrusted_redirect_rejected",
+                    "discovery": discovery,
                     "deny_paths": deny_results,
                     "issuer": allow_claims.get("iss"),
+                    "server": server_profile,
                     "audience": resource_url,
                     "tools": len(tools),
                     "write_page": TEST_PAGE,

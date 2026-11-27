@@ -108,6 +108,19 @@ def main() -> int:
     token = login.get("access_token")
     if not isinstance(token, str) or not token or login.get("user", {}).get("email") != admin_email:
         raise RuntimeError("Native email login returned an invalid session")
+    server = api_json("GET", f"{base_url}/servers/{server_id}", token=token)
+    if server.get("visibility") != "public":
+        raise RuntimeError("Power Wiki virtual server must remain public for RFC 9728 discovery")
+    if server.get("oauthEnabled") is not True or server.get("oauthConfigApproved") is not True:
+        raise RuntimeError("Power Wiki virtual server OAuth must remain enabled and approved")
+    teams = api_json("GET", f"{base_url}/v1/teams/?limit=500&include_pagination=false", token=token).get("teams", [])
+    team_name = os.environ.get("POWER_WIKI_OPERATOR_TEAM", "Power Wiki Operators")
+    operator_team = next((team for team in teams if team.get("name") == team_name), None)
+    if not operator_team:
+        raise RuntimeError("Power Wiki operator team was not found")
+    server_team_id = server.get("teamId") or server.get("team_id")
+    if server_team_id != operator_team.get("id"):
+        raise RuntimeError("Power Wiki virtual server is not owned by the dedicated operator team")
     client = McpClient(f"{base_url}/servers/{server_id}/mcp", token)
 
     initialized = client.send(
