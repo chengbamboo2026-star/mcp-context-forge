@@ -206,6 +206,19 @@ class PowerWikiKeycloakTests(unittest.TestCase):
                 },
                 {},
             ),
+            (
+                {
+                    "issuer": issuer,
+                    "authorization_endpoint": f"{issuer}/protocol/openid-connect/auth",
+                    "token_endpoint": f"{issuer}/protocol/openid-connect/token",
+                    "jwks_uri": f"{issuer}/protocol/openid-connect/certs",
+                    "registration_endpoint": f"{issuer}/clients-registrations/openid-connect",
+                    "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "authorization_response_iss_parameter_supported": True,
+                },
+                {},
+            ),
         ]
 
         with unittest.mock.patch.object(oauth_verifier, "http_json", side_effect=responses) as http_json:
@@ -215,7 +228,11 @@ class PowerWikiKeycloakTests(unittest.TestCase):
             result["resource_metadata"],
             "https://kb.example.test/.well-known/oauth-protected-resource/servers/550e8400-e29b-41d4-a716-446655440000/mcp",
         )
-        self.assertEqual(http_json.call_count, 2)
+        self.assertEqual(
+            result["authorization_server_metadata"],
+            "https://auth.example.test/.well-known/oauth-authorization-server/realms/power-wiki",
+        )
+        self.assertEqual(http_json.call_count, 3)
 
     def test_oauth_discovery_requires_public_pkce_token_exchange(self):
         resource = "https://kb.example.test/servers/550e8400-e29b-41d4-a716-446655440000/mcp"
