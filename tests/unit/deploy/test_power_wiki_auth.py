@@ -151,6 +151,72 @@ class PowerWikiKeycloakTests(unittest.TestCase):
         )
         self.assertFalse(any("unrelated-client/optional-client-scopes" in path for _, path, _ in calls))
 
+    def test_codex_callback_is_bound_to_the_complete_resource_url(self):
+        resource = "https://kb.bamboo9527.top/servers/73c72592dd9c447d86b230930e20722d/mcp"
+
+        callback = contextforge_keycloak.codex_callback_url(resource, 12798)
+
+        self.assertEqual(callback, "http://127.0.0.1:12798/callback/MMQ4xFY2-pUR")
+        self.assertNotEqual(
+            callback,
+            contextforge_keycloak.codex_callback_url(f"{resource}?tenant=other", 12798),
+        )
+
+    def test_codex_callback_rejects_an_invalid_port(self):
+        with self.assertRaisesRegex(RuntimeError, "between 1 and 65535"):
+            contextforge_keycloak.codex_callback_url("https://kb.example.test/mcp", 0)
+
+    def test_contextforge_profile_creates_public_codex_client(self):
+        calls = []
+        scope_reads = [[], [{"id": "scope-id", "name": "mcp:tools"}]]
+
+        class Api:
+            def request(self, method, path, data=None, **_kwargs):
+                calls.append((method, path, data))
+                if method == "GET" and path.endswith("/optional-client-scopes"):
+                    return scope_reads.pop(0)
+                if method == "GET" and path.endswith("/clients/codex-internal-id"):
+                    return {
+                        "clientId": "power-wiki-codex",
+                        "publicClient": True,
+                        "standardFlowEnabled": True,
+                        "directAccessGrantsEnabled": False,
+                        "redirectUris": ["http://127.0.0.1:12798/callback/MMQ4xFY2-pUR"],
+                        "attributes": {"pkce.code.challenge.method": "S256"},
+                    }
+                return None
+
+        with unittest.mock.patch.object(
+            contextforge_keycloak,
+            "ensure_client",
+            return_value="codex-internal-id",
+        ) as ensure_client:
+            callback = contextforge_keycloak.ensure_codex_client(
+                Api(),
+                "power-wiki",
+                "https://kb.bamboo9527.top/servers/73c72592dd9c447d86b230930e20722d/mcp",
+                "scope-id",
+                "power-wiki-codex",
+                12798,
+            )
+
+        payload = ensure_client.call_args.args[2]
+        self.assertEqual(callback, "http://127.0.0.1:12798/callback/MMQ4xFY2-pUR")
+        self.assertTrue(payload["publicClient"])
+        self.assertTrue(payload["standardFlowEnabled"])
+        self.assertFalse(payload["directAccessGrantsEnabled"])
+        self.assertFalse(payload["fullScopeAllowed"])
+        self.assertNotIn("secret", payload)
+        self.assertEqual(payload["attributes"]["pkce.code.challenge.method"], "S256")
+        self.assertIn(
+            (
+                "PUT",
+                "/admin/realms/power-wiki/clients/codex-internal-id/optional-client-scopes/scope-id",
+                None,
+            ),
+            calls,
+        )
+
     def test_chatgpt_dcr_client_rejects_untrusted_redirect(self):
         client = {
             "protocol": "openid-connect",

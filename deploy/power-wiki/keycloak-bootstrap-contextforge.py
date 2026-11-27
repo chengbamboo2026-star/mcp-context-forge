@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,6 +23,8 @@ CONTEXTFORGE_RESOURCE_URL = (
 DIRECT_RESOURCE_URL = "https://kb.bamboo9527.top/mcp"
 CHATGPT_STABLE_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect"
 CHATGPT_CALLBACK_PREFIX = "/connector/oauth/"
+CODEX_CLIENT_ID = "power-wiki-codex"
+CODEX_CALLBACK_PORT = 12798
 
 
 def required_env(name: str, default: str | None = None) -> str:
@@ -190,6 +194,15 @@ def audience_mapper(resource_url: str) -> dict[str, Any]:
     }
 
 
+def codex_callback_url(resource_url: str, callback_port: int) -> str:
+    """Return the exact callback URL for a Codex MCP server."""
+    if callback_port < 1 or callback_port > 65535:
+        raise RuntimeError("Codex callback port must be between 1 and 65535")
+    digest = hashlib.sha256(resource_url.encode("utf-8")).digest()[:9]
+    callback_id = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return f"http://127.0.0.1:{callback_port}/callback/{callback_id}"
+
+
 def ensure_client_scope(api: JsonClient, realm: str, resource_url: str) -> str:
     """Create or update the mcp:tools client scope."""
     base = f"/admin/realms/{urllib.parse.quote(realm)}/client-scopes"
@@ -282,6 +295,26 @@ def ensure_chatgpt_dcr_scopes(api: JsonClient, realm: str, scope_id: str) -> int
     return matched
 
 
+def ensure_optional_client_scope(
+    api: JsonClient,
+    realm: str,
+    client_internal_id: str,
+    scope_id: str,
+    client_name: str,
+) -> None:
+    """Add one optional scope to one client and verify the assignment."""
+    encoded_realm = urllib.parse.quote(realm)
+    encoded_client = urllib.parse.quote(client_internal_id)
+    encoded_scope = urllib.parse.quote(scope_id)
+    path = f"/admin/realms/{encoded_realm}/clients/{encoded_client}/optional-client-scopes"
+    assigned = api.request("GET", path)
+    if not any(str(item.get("id")) == scope_id for item in assigned):
+        api.request("PUT", f"{path}/{encoded_scope}")
+    verified = api.request("GET", path)
+    if not any(str(item.get("id")) == scope_id for item in verified):
+        raise RuntimeError(f"Keycloak did not add mcp:tools to the {client_name} client")
+
+
 def client_by_id(api: JsonClient, realm: str, client_id: str) -> dict[str, Any] | None:
     """Return one Keycloak client by clientId."""
     query = urllib.parse.urlencode({"clientId": client_id})
@@ -304,6 +337,56 @@ def ensure_client(api: JsonClient, realm: str, payload: dict[str, Any]) -> str:
     if not created:
         raise RuntimeError(f"Keycloak did not create client: {payload['clientId']}")
     return str(created["id"])
+
+
+def ensure_codex_client(
+    api: JsonClient,
+    realm: str,
+    resource_url: str,
+    scope_id: str,
+    client_id: str,
+    callback_port: int,
+) -> str:
+    """Create the public Codex client and return its callback URL."""
+    callback_url = codex_callback_url(resource_url, callback_port)
+    internal_id = ensure_client(
+        api,
+        realm,
+        {
+            "clientId": client_id,
+            "name": "Power Wiki Codex",
+            "enabled": True,
+            "protocol": "openid-connect",
+            "bearerOnly": False,
+            "publicClient": True,
+            "standardFlowEnabled": True,
+            "implicitFlowEnabled": False,
+            "directAccessGrantsEnabled": False,
+            "serviceAccountsEnabled": False,
+            "consentRequired": False,
+            "fullScopeAllowed": False,
+            "redirectUris": [callback_url],
+            "webOrigins": [],
+            "attributes": {
+                "pkce.code.challenge.method": "S256",
+                "oauth2.device.authorization.grant.enabled": "false",
+            },
+        },
+    )
+    ensure_optional_client_scope(api, realm, internal_id, scope_id, "Codex")
+    encoded_realm = urllib.parse.quote(realm)
+    encoded_client = urllib.parse.quote(internal_id)
+    readback = api.request("GET", f"/admin/realms/{encoded_realm}/clients/{encoded_client}")
+    if (
+        readback.get("clientId") != client_id
+        or readback.get("publicClient") is not True
+        or readback.get("standardFlowEnabled") is not True
+        or readback.get("directAccessGrantsEnabled") is not False
+        or readback.get("redirectUris") != [callback_url]
+        or readback.get("attributes", {}).get("pkce.code.challenge.method") != "S256"
+    ):
+        raise RuntimeError("Keycloak Codex client readback did not match the required profile")
+    return callback_url
 
 
 def ensure_clients(
@@ -469,6 +552,8 @@ def main() -> int:
     provider_id = required_env("POWER_WIKI_OIDC_PROVIDER_ID", "keycloak-power-wiki")
     contextforge_public_url = required_env("CONTEXTFORGE_PUBLIC_URL", "https://kb.bamboo9527.top")
     contextforge_client_id = required_env("POWER_WIKI_OIDC_CLIENT_ID", "contextforge-power-wiki")
+    codex_client_id = required_env("POWER_WIKI_CODEX_CLIENT_ID", CODEX_CLIENT_ID)
+    codex_callback_port = int(required_env("POWER_WIKI_CODEX_CALLBACK_PORT", str(CODEX_CALLBACK_PORT)))
     operator_email = required_env("POWER_WIKI_OPERATOR_EMAIL", "power-wiki-operator@bamboo9527.top").lower()
     secrets_dir = Path(required_env("POWER_WIKI_AUTH_SECRETS_DIR", "./runtime/auth-secrets"))
 
@@ -492,6 +577,14 @@ def main() -> int:
         contextforge_public_url,
         provider_id,
     )
+    codex_callback = ensure_codex_client(
+        api,
+        realm,
+        resource_url,
+        scope_id,
+        codex_client_id,
+        codex_callback_port,
+    )
     ensure_operator(api, realm, operator_email, read_secret(str(secrets_dir / "operator-initial-password")))
     ensure_registration_policies(api, realm, str(realm_state["id"]))
     print(
@@ -503,6 +596,8 @@ def main() -> int:
                 "operator": operator_email,
                 "dcr": "restricted",
                 "dcr_clients_scoped": dcr_clients,
+                "codex_client": codex_client_id,
+                "codex_callback": codex_callback,
             },
             sort_keys=True,
         )
